@@ -43,12 +43,13 @@ except:
 from tqdm import tqdm, trange
 
 from transformers import (WEIGHTS_NAME, AdamW, WarmupLinearSchedule,
-                                  BertConfig, BertForMaskedLM, BertTokenizer,
+                                  BertConfig, BertForMaskedLM,
                                   GPT2Config, GPT2LMHeadModel, GPT2Tokenizer,
                                   OpenAIGPTConfig, OpenAIGPTLMHeadModel, OpenAIGPTTokenizer,
                                   RobertaConfig, RobertaForMaskedLM, RobertaTokenizer,
                                   DistilBertConfig, DistilBertForMaskedLM, DistilBertTokenizer)
 
+from customized_tokenization_bert import BertTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -471,18 +472,28 @@ def main():
         torch.distributed.barrier()  # Barrier to make sure only the first process in distributed training download model & vocab
 
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+
+    # tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
+    #                                             do_lower_case=args.do_lower_case,
+    #                                             cache_dir=args.cache_dir if args.cache_dir else None)
+    tokenizer = BertTokenizer(args.tokenizer_name,
+                              do_lower_case=args.do_lower_case,
+                              cache_dir=args.cache_dir if args.cache_dir else None)
+
     config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path,
                                           cache_dir=args.cache_dir if args.cache_dir else None)
-    tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
-                                                do_lower_case=args.do_lower_case,
-                                                cache_dir=args.cache_dir if args.cache_dir else None)
+
+    config.vocab_size = tokenizer.vocab_size
+    config.max_position_embeddings = 600
+
     if args.block_size <= 0:
         args.block_size = tokenizer.max_len_single_sentence  # Our input block size will be the max possible for the model
     args.block_size = min(args.block_size, tokenizer.max_len_single_sentence)
-    model = model_class.from_pretrained(args.model_name_or_path,
-                                        from_tf=bool('.ckpt' in args.model_name_or_path),
-                                        config=config,
-                                        cache_dir=args.cache_dir if args.cache_dir else None)
+    # model = model_class.from_pretrained(args.model_name_or_path,
+    #                                     from_tf=bool('.ckpt' in args.model_name_or_path),
+    #                                     config=config,
+    #                                     cache_dir=args.cache_dir if args.cache_dir else None)
+    model = BertForMaskedLM(config=config)
     model.to(args.device)
 
     if args.local_rank == 0:
@@ -496,6 +507,7 @@ def main():
             torch.distributed.barrier()  # Barrier to make sure only the first process in distributed training process the dataset, and the others will use the cache
 
         train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False)
+        print(len(train_dataset))
 
         if args.local_rank == 0:
             torch.distributed.barrier()
@@ -543,7 +555,6 @@ def main():
             result = evaluate(args, model, tokenizer, prefix=prefix)
             result = dict((k + '_{}'.format(global_step), v) for k, v in result.items())
             results.update(result)
-
     return results
 
 
